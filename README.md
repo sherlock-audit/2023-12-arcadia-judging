@@ -492,14 +492,13 @@ With this background, we can now move on to describing the vulnerability in full
 
 Initially, we will create an account and deposit collateral whose value is in the limit of the configured `minUsdValue` (if the `minUsdValue` is 100 tokens, the ideal amount to have will be 100 tokens to maximize gains). We will see why this is required later. The account’s collateral and debt status will look like this:
 
-![arcadia_vuln_1](https://github.com/sherlock-audit/2023-12-arcadia-0xadrii/assets/56537955/4c4c3edc-b1e7-454d-be93-d0824f05338d)
+![vuln1](https://github.com/sherlock-audit/2023-12-arcadia-judging/assets/1048185/569c3821-2932-4565-bdc3-f4f12f7907b2)
 
 
 
 The next step after creating the account is to trigger a flash action. As mentioned in the introduction, the borrowed funds will be sent to the `actionTarget` (this will be a contract we create and control). An important requirement is that if the borrowed asset is an ERC777 token, we will be able to execute the ERC777 callback in our `actionTarget` contract, enabling us to gain control of the execution flow. Following our example, if we borrowed 200 tokens the account’s status would look like this:
 
-![arcadia_vuln_2](https://github.com/sherlock-audit/2023-12-arcadia-0xadrii/assets/56537955/732e4fd2-acea-4873-903c-91388c5855c3)
-
+![vuln2](https://github.com/sherlock-audit/2023-12-arcadia-judging/assets/1048185/a41aee42-d0a2-461e-90fa-787762d2acfb)
 
 On receiving the borrowed tokens, the actual attack will begin. The`actionTarget` will trigger the `Liquidator.liquidateAccount()` function to liquidate our own account. This is possible because  the funds borrowed using the flash action  are accounted as debt for our account (as we can see in the previous image, the borrowed amount greatly surpasses our account’s collateral value) prior to executing the `actionTarget` ERC777 callback, making the account susceptible of being liquidated. Executing this function will start the auction process and store data relevant to the account and its debt in the `auctionInformation_` mapping. 
 
@@ -563,7 +562,7 @@ function auctionRepay(uint256 startDebt, uint256 minimumMargin_, uint256 amount,
 
 After `LendingPool.auctionRepay()` , execution will go back to `Liquidator.bid()`. The account’s `auctionBid()` function will then be called, which will transfer the 1 token requested by the bidder in the `askedAssetAmounts` parameter from the account’s collateral to the bidder. This is the most important concept in the attack. Because 1 token is moving out from the account’s collateral, the current collateral value from the account will be decreased from 100 USD to 99 USD, making the collateral value be under the minimum `minUsdValue` amount of 100 USD, and thus making the collateral value from the account go straight to 0 at the eyes of the creditor:
 
-![arcadia_vuln_3](https://github.com/sherlock-audit/2023-12-arcadia-0xadrii/assets/56537955/bfdc0b7d-dc1d-4b86-88cf-7d79cad9d761)
+![vuln3](https://github.com/sherlock-audit/2023-12-arcadia-judging/assets/1048185/498b92d7-6036-4d67-9acd-fdf5e139f930)
 
 
 Because the `earlyTerminate` was NOT set to `true` in `LendingPool.auctionRepay()`, the `if (earlyTerminate)` condition will be skipped,  going straight to evaluate the `else if (endAuction_)` condition . Because we set the`endAuction_` parameter to true when calling the `bid()` function, `_settleAuction()` will execute.
@@ -2120,63 +2119,123 @@ Add a utilisation cap of 100%. Many other lending protocols implement this mitig
 
 The protocol team fixed this issue in PR/commit https://github.com/arcadia-finance/lending-v2/pull/137.
 
-# Issue M-5: Differences in spot price vs AMM prices can be abused to completely misrepresent the holdings of a UniV3 LP tokens 
+**sherlock-admin2**
 
-Source: https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/144 
+> This should be high as it can steal both the first subsequent deposit and all future deposits after that. The original linked issue for Silo Finance was Critical although Silo had multiple simultaneous pools. The interest rate formula for both Silo and Arcadia are the same, but that POC was more optimised which shows a faster rate of massive interest accrual.
+
+You've deleted an escalation for this issue.
+
+**nevillehuang**
+
+Hi @Banditx0x I believe the following factors mentioned by @zzykxx in his report warrants the decrease in severity:
+
+> - The interest rate is capped at 2^80 (~= 10^24) because of the downcasting in [LendingPool::_calculateInterestRate()](https://github.com/sherlock-audit/2023-12-arcadia/blob/main/lending-v2/src/LendingPool.sol#L837). The maximum interest is about 100% every 20 days.
+> - The tokens sent directly to the pool by the griefer are effectively lost and can be transferred to the treasury.
+> - The virtual shares implementation in the tranches might prevent the attacker from collecting all of the interest.
+
+Sponsors Comments:
+
+> impact is only possible in quasi empty pools, and cost for doing it is largely in line with the damage done. In the example of 93, only 100 assets are in the pool, 1e18 are donated by the attacker → only the user borrowing the 100 assets is affected, so in this case of an empty pool, not a lot, and even more, the 1e18 can indeed be borrowed by the attacker, but he’ll be liquidated and incur a loss himself: he is the one paying the interest he jacked up (even if only >100 is recovered through liquidations, the LP actually profits, since the penalty is paid on a larger amount than what the “good” lp borrowed out). → low probability, cost is high → medium at most
+
+**zzykxx**
+
+Hey @Banditx0x, correct me if I'm wrong, but I think the following applies here:
+- In the Silo finance exploit depositing assets in a pool allowed to use the shares of the said pool to borrow other assets. An attacker  could deposit a small amount, borrow his own donation (increasing the utilization rate), which had the effect of increasing the value of his initial donation. Then he could use the initial donation, which is now extremely overvalued, as collateral to borrow assets and steal funds. This is not possible here because the shares of a lending pool cannot be used as collateral to borrow assets.
+- Unlike the Silo finance case, the maximum interest rate achievable is capped at `uint80` =~ `10^24`.
+- To steal a sensible amount of funds the attacker should first deposit more than "100" assets. But by depositing more than "100" assets the required amount to donate to achieve maximum utilization manipulation also increases. You could argue this is not the case and more time just needs to pass, but if anybody in the meantime deposits extra funds in the tranche and/or calls `updateInterestRate()` the interest rate will diminish the speed at which it increases.
+- The attacker, which as you said can borrow his own donation, also has to pay interest on it.
+- In your POC the virtual shares are not taken into account. As we know virtual shares cause a loss to the first depositor, this depends on the amount of decimals and the value of the underlying and also by how much the virtual share is set at.
+
+
+Some damage can be caused by abusing this issue, but I think the damage is not big enough to classify this as high severity. Of course, I would be more than happy to be proven wrong since this would also be in my personal interest.
+
+
+
+**Banditx0x**
+
+@zzykxx thanks for the response. You're right that the Silo finance situation had much higher impact due to manipulation of one asset allowing borrows of another. However I had originally thought that the impact would be High even with this in mind as it had the same impact as the share inflation attack which historically has had high severity. 
+
+I hadn't realised the maximum interest rate was capped at `uint80`, which indeed caps the interest rate to far lower than the issue I had linked. 
+
+
+Given the slower interest rate accrual than I originally thought, I agree with the medium severity.
+
+Edit: i deleted past escalation comment due to this discussion. Just so this conversation makes sense for future readers.
+
+**Czar102**
+
+Planning to reject the escalation and leave the issue as is.
+
+**Czar102**
+
+Result:
+Medium
+Has duplicates
+
+**midori-fuse**
+
+Wasn't the escalation deleted before the period end?
+
+Banditx0x's comment was last edited on 5:26AM UTC, while the escalation period end was 12:36PM same day. 
+
+**Czar102**
+
+@midori-fuse It looks so, we will look into it. Thank you for bringing this up!
+
+**Czar102**
+
+The escalation should have been deleted, there was an issue on Sherlock's part that's now resolved.
+
+# Issue M-5: Dilution of Donations in Tranche 
+
+Source: https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/121 
 
 The protocol has acknowledged this issue.
 
 ## Found by 
-0x52
+Atharv, erosjohn, pash0k
 ## Summary
-
-`UniswapV3#getPrincipleAmounts` uses the current valuation base on oracles to determine the amount of tokens in a UniV3 LP position. This can be abused by creating an LP position that is outside this price that causes the composition of the token to be entirely different than it actually is. Due to the tiny differences in ticks, this can occur with minute differences between oracle and pool price.
+In this attack, the attacker takes advantage of the non-atomic nature of the donation and the share valuation process. By strategically placing deposit and withdrawal transactions around the donation transaction, the attacker can temporarily inflate their share of the pool to capture a large portion of the donated funds, which they then quickly exit with, leaving the pool with their original investment plus extra value extracted from the donation.
 
 ## Vulnerability Detail
+Though there is no reasonable flow where users will just 'donate' assets to others, Risk Manager may needs to call `donateToTranche` to compensate the jrTranche after an auction didn't get sold and was manually liquidated after cutoff time or in case of bad debt. 
 
-[UniswapV3AM.sol#L268-L283](https://github.com/sherlock-audit/2023-12-arcadia/blob/main/accounts-v2/src/asset-modules/UniswapV3/UniswapV3AM.sol#L268-L283)
+`donateToTranche` function of a lending pool smart contract, allows for a sandwich attack that can be exploited by a malicious actor to dilute the impact of donations made to a specific tranche. This attack involves front-running a detected donation transaction with a large deposit and following it up with an immediate withdrawal after the donation is processed.
 
-    function _getPrincipalAmounts(
-        int24 tickLower,
-        int24 tickUpper,
-        uint128 liquidity,
-        uint256 priceToken0,
-        uint256 priceToken1
-    ) internal pure returns (uint256 amount0, uint256 amount1) {
-        // Calculate the square root of the relative rate sqrt(token1/token0) from the trusted USD price of both tokens.
-        // sqrtPriceX96 is a binary fixed point number with 96 digits precision.
-        uint160 sqrtPriceX96 = _getSqrtPriceX96(priceToken0, priceToken1);
-
-        @audit-issue bases liquidity on oracle prices rather than pool prices
-        (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
-            sqrtPriceX96, TickMath.getSqrtRatioAtTick(tickLower), TickMath.getSqrtRatioAtTick(tickUpper), liquidity
-        );
-    }
-
-When calculating the tokens held by an LP position, the `sqrtPriceX96` is used to determine the holdings of the LP token. If this price is outside of the ticks of the LP position it will show the composition of the LP token as either completely `token0` (below) or completely `token1` (above). We can now abuse this to completely misrepresent the holdings of the token.
-
-Assume the following prices for ETH:
-
-Oracle - $1000.01
-Pool - $1000
-
-Due to the precision of ticks, pool is a single tick higher than the oracle. Now imagine a position of ETH-USDC that is a single tick position. At the oracle tick, the contract thinks this position would be entirely USDC but at the actual tick of the pool it is entirely ETH. This allows a user to completely bypass exposure limits. As stated in my other submission, these limits are very important for a debt market. 
+The lending pool contract in question allows liquidity providers (LPs) to deposit funds into tranches, which represent slices of the pool's capital with varying risk profiles. The `donateToTranche` function permits external parties to donate assets to a tranche, thereby increasing the value of the tranche's shares and benefiting all LPs proportionally. Transactions can be observed by one of the LP's before they are mined. An attacker can exploit this by identifying a pending donation transaction and executing a sandwich attack. This attack results in the dilution of the donation's intended effect, as the attacker's actions siphon off a portion of the donated funds.
 
 ## Impact
+Dilution of Donation: The intended impact of the donation on the original LPs is diluted as the attacker siphons off a portion of the donated funds.
 
-Single tick positions can be used to completely bypass exposure limits
+## Steps to Reproduce Issue
+1. Front-Running: The attacker deposits a significant amount of assets into the target tranche before the donation transaction is confirmed, temporarily increasing their share of the tranche.
+
+2. Donation Processing: The original donation transaction is processed, increasing the value of the tranche's shares, including those recently acquired by the attacker.
+
+3. Back-Running: The attacker immediately withdraws their total balance from the tranche, which now includes a portion of the donated assets, effectively extracting value from the donation meant for the original LPs.
 
 ## Code Snippet
+ [Code Snippet](https://github.com/sherlock-audit/2023-12-arcadia/blob/main/lending-v2/src/LendingPool.sol#L350)
 
-[UniswapV3AM.sol#L268-L283](https://github.com/sherlock-audit/2023-12-arcadia/blob/main/accounts-v2/src/asset-modules/UniswapV3/UniswapV3AM.sol#L268-L283)
+## Coded PoC
+```solidity
+https://github.com/Atharv181/Arcadia-POC
+```
+```javascript
+- git clone https://github.com/Atharv181/Arcadia-POC
+- cd Arcadia-POC
+- forge install
+- forge test --mt test_PoC -vvv
+```
 
 ## Tool used
 
-Manual Review
+Manual Review, Foundry
 
 ## Recommendation
+- Snapshot Mechanism: Take snapshots of share ownership at random intervals and distribute donations based on the snapshot to prevent exploitation.
+- Timelocks: Implement a timelock mechanism that requires funds to be locked for a certain period before they can be withdrawn.
 
-This mainly affects LP with extremely narrow spread. There are two potential approaches to fix this. First could be to restrict the spread of the LP token. For example LP shouldn't be allowed if their spread is less than 1000 ticks. The other approach would be to check assets with both the pool price and the oracle price and compare the results. If the assets differ by more than 1% then the transaction should revert.
 
 
 
@@ -2191,28 +2250,305 @@ This mainly affects LP with extremely narrow spread. There are two potential app
 
 
 
+**nevillehuang**
+
+Low severity, A combination of Front and Back running not possible on Base, Optimism and Arbitrum due to private sequencers. Other chains were not explicitly mentioned, or at least all the issues and the duplicates do not present a possible chain where a sandwich attack is possible.
+
+**zzykxx**
+
+Escalate
+
+I'm escalating this on behalf of @pa-sh0k because I believe his claims should be considered via a proper escalation. This is what he states:
+
+The loss of funds can be caused not only if the attacker executes an atomic sandwich attack, but also if they do the following steps:
+
+1. backrun the liquidation that ended up in transferring collateral to the admin, since this always leads to the donateToTranche call, and then deposit to the tranche
+2. backrun the donation itself and redeem their shares, obtaining profit
+
+Hence, the reason for invalidation is incorrect.
+
+Also, the sponsor has acknowledged the issue in discord channel. 
+
+By Sherlock’s rules, this issue is a medium, it suits the following criteria: “Causes a loss of funds but requires certain external conditions or specific states, or a loss is highly constrained. The losses must exceed small, finite amount of funds, and any amount relevant based on the precision or significance of the loss”.
+
+**sherlock-admin2**
+
+> Escalate
+> 
+> I'm escalating this on behalf of @pa-sh0k because I believe his claims should be considered via a proper escalation. This is what he states:
+> 
+> The loss of funds can be caused not only if the attacker executes an atomic sandwich attack, but also if they do the following steps:
+> 
+> 1. backrun the liquidation that ended up in transferring collateral to the admin, since this always leads to the donateToTranche call, and then deposit to the tranche
+> 2. backrun the donation itself and redeem their shares, obtaining profit
+> 
+> Hence, the reason for invalidation is incorrect.
+> 
+> Also, the sponsor has acknowledged the issue in discord channel. 
+> 
+> By Sherlock’s rules, this issue is a medium, it suits the following criteria: “Causes a loss of funds but requires certain external conditions or specific states, or a loss is highly constrained. The losses must exceed small, finite amount of funds, and any amount relevant based on the precision or significance of the loss”.
+
+You've created a valid escalation!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
 **Thomas-Smets**
 
-We acknowledge the finding, but will not implement a fix for a number of reasons:
+If such a backrun would happen, the admin would just not donate via `donateToTranche`.
 
-To properly solve the issue, we should have a view function in every asset-module, that returns if a certain deposit would result in an overexposure or not.
-For positions with narrow ranges, we could then check if if any of the tokens would overflow, if the price is outside the range at either side. This would however require a lot of new logic in every asset module, and a big refactor of the `UniswapV3AM`.
-We are worried that such big changes, introducing new potential bugs, might outweigh the risks they mitigate.
+The auction proceeds would in this case donated via different means (it is already the unhappy flow of an unhappy flow where things have to be handled manually).
+A bit annoying, but no loss of user funds.
 
-> For example LP shouldn't be allowed if their spread is less than 1000 ticks.
+So the attacker has the risk that they have to provide liquidty in the Tranche for un unknown amount of time, without any certainty of profits at all.
 
-Providing liquidity in narrow ticks around current prices is the main use-case of Uniswap V3 LPs.
-Hence blocking this, as is suggested in the issue would make most Uni V3 strategies on Arcadia impossible.
+**pa-sh0k**
 
->  Check assets with both the pool price and the oracle price and compare the results. If the assets differ by more than 1% then the transaction should revert.
+Detecting the backrun and getting the funds back to the depositors via different means is indeed a solution to the problem. 
+However, it does not make the problem itself invalid or non-existent: there may be different solutions and all of them, of course, should lead to no loss of user funds.
 
-Since the precision of ticks is much higher than the Deviation Threshold of most oracles we are not sure this would solve the issue.
+The issue still exists and it can be prevented using the described method only if it was known beforehand, but it was not stated in the known issues or anywhere else. 
 
-Lastly there are a number of ways the risk manager can mitigate the risks:
-- The `UniswapV3AM` will have a max exposure in USD -> exposure limits cannot be completely bypassed. The maximum an exposure for an underlying asset can be bypassed is the "free" amount of exposure the `UniswapV3AM` still has. The `UniswapV3AM` specific riskFactor can further limit the amount that can be borrowed against said asset.
-- If we see that this type of abuse would occur in practice, the risk manager can set the maxExposure for this implementation of "UniswapV3AM" to 0. And a new asset module with a new `NonFungiblePositionManager` can be used for Uniswap V3 (`NonFungiblePositionManager` is actually just a wrapper for LP positions).
+I have said this in the discord channel, but since the conversation was moved here, I will add a quote so anyone can understand the context:
 
-Also it is important to mention that exposure limits are already a mitigation against attacks (e.g. manipulation of external markets). By circumventing certain max exposures (but not unlimited) alone, an attacker cannot make direct profit.
+> private sequencer doesn't have anything to do with this issue, this can be done in separate blocks and with backruns, 
+> check my comment on this issue: https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/128
+> So, the attack has the following scenario:
+> - a liquidation results in unhappy flow with unsold collateral
+> - collateral is sent to the admin
+> - in the next block (or a bit later), once the attacker sees this onchain, attacker deposits funds to the junior tranche
+> - during period of length T admin manually sells the collateral
+> - admin donates the funds to the junior tranche
+> - in next block (or a bit later), once the attacker sees this onchain, attacker redeems their shares
+>
+> This results in gains for the attacker and losses for the original depositors, since they got less funds that they should have after the liquidation was manually resolved
+
+
+Also, wanted to state that my issue, #128 , is a duplicate of this one and everything said in this discussion is applicable to it and vice versa.
+
+
+
+
+**Thomas-Smets**
+
+I want to state again that `donateToTranche` is never enforced by the protocol in any means.
+It is a function that **can** but not **must** be used in the case a manual liquidation is triggered.
+
+Normally if the protocol functions as expected, auctions terminate automatically.
+
+We however foresaw a flow that if for some reason an auction would not end (this already means things did not work out as expected), a trusted user (set by the Creditor) can **manually** liquidate the assets.
+
+After the assets are liquidated he can choose if and how to distribute the assets to potentially impacted users.
+The `donateToTranche` is a function that might help in this process but the protocol obliges nobody to use it.
+It is not part of the core functionality. It is a function to help in an already manual unhappy flow of a unhappy flow.
+
+There are no guaranteed losses for LPs, and attackers have no guaranteed way to make profits, but have to put significant amounts of capital at stake.
+
+Note on the recommendations:
+
+> Snapshot Mechanism: Take snapshots of share ownership at random intervals and distribute donations based on the snapshot to prevent exploitation.
+
+Snapshots are not mutually exclusive from `donateToTranche`. We are in a manual trusted flow.
+If the manual liquidator could liquidate remaining assets before new people deposit in the Tranche he can use `donateToTranche`. If not they can use a snapshot and distribute funds.
+
+> Timelocks: Implement a timelock mechanism that requires funds to be locked for a certain period before they can be withdrawn.
+
+This creates new issues and risks since the the locking mechanisms of Tranches are already complex.
+
+**pa-sh0k**
+
+Before this issue was submitted, escalated and this discussion was started, it was **not** stated anywhere, that backrunning activity will be monitored and if something malicious is noticed, other ways of liquidation settling will be used. 
+
+If you have known about such attack vector and already had other ways of handling it, it should have been stated in the known issues. 
+
+**Thomas-Smets**
+
+It is a trusted manual flow executed by a permissioned role!
+And that is clearly stated in the code
+
+**nevillehuang**
+
+Agree with sponsor comments [here](https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/121#issuecomment-1972955779), this issue should remain low severity.
+
+**pa-sh0k**
+
+The fact that it is executed by a permissioned role is already assumed in the issue. The issue is that when trusted manual flow is executed by a permissioned role using `donateToTranche`, users' funds can be stolen.
+
+What is stated in the code (LendingPool.sol#L346-L347) about `donateToTranche` is the following:
+> It is supposed to serve as a way to compensate the jrTranche after an auction didn't get sold and was manually liquidated after cutoffTime.
+
+From this comment it cannot be concluded that backrunning will be monitored and if something malicious is noticed, other ways of liquidation settling will be used.
+
+The fact that this flow is executed by a permissioned role does not make it invincible.
+
+What was stated previously:
+
+> I do acknowledge it exists, but we consider it a low, since pay-out for attackers is uncertain and as you said, it can be prevented if an attacker really tries to pull it of.
+
+Obviously, this issue can't be prevented it is not known about by the admin. Since it was submitted, which is my job as a Watson, now the admins know about it and can prevent the loss of funds. 
+
+Addressing the Sherlock's criteria:
+
+“Causes a loss of funds but requires certain external conditions or specific states, or a loss is highly constrained. The losses must exceed small, finite amount of funds, and any amount relevant based on the precision or significance of the loss”.
+
+This issue requires certain external conditions and causes loss of funds if these conditions are met. 
+
+Regarding the following words of the sponsor:
+> attackers have no guaranteed way to make profits, but have to put significant amounts of capital at stake
+
+Attacker is guaranteed to make profits if the conditions are met. Also, probability of depositing funds into the protocol as a liquidity provider for a short period of time, which the attacker would have to do, has near-to-zero risk of losing money. They would probably even make money by providing liquidity. 
+
+
+
+
+**Thomas-Smets**
+
+> From this comment it cannot be concluded that backrunning will be monitored and if something malicious is noticed, other ways of liquidation settling will be used.
+
+As we say in the comment:
+
+It is supposed to serve as _**a way**_ to compensate the jrTranche after an auction didn't get sold and was manually liquidated after cutoffTime.
+
+not
+
+It is supposed to serve as _**the way**_ to compensate the jrTranche after an auction didn't get sold and was manually liquidated after cutoffTime.
+
+Addressing the Sherlock's criteria:
+
+We even state that this flow is not enforced by the smart contracts:
+https://github.com/arcadia-finance/lending-v2/blob/dcc682742949d56928e7e8e281839d2229bd9737/src/Liquidator.sol#L431
+
+**pa-sh0k**
+
+"Not enforced by the smart contracts" is equal to "it is manual", which is already assumed in the issue.
+
+The issue is invalid if `donateToTranche` is never used for refunding the users. The comments imply that at some point it will be used for it, so, once it is used, the mentioned conditions are met and loss of funds is caused.
+
+The argument that if admin wants to use `donateToTranche` but sees that an attacker made a large deposit trying to frontrun the call and then will decide to use other way of refunding is not applicable here, as before this issue was submitted, the need for monitoring and preventing such attack was not known.
+
+
+If other way of refunding is chosen for some other reasons, the attacker can simply withdraw their funds at no loss.
+
+**Atharv181**
+
+I'd like to further emphasize the significance of our concerns. While it's true that the `donateToTranche` function is not the only method for handling manual liquidation settlements, it remains a potential avenue for exploitation. If the protocol was aware of this vulnerability beforehand, it raises questions as to why it wasn't explicitly mentioned in the known issues.
+
+It's crucial to acknowledge that while the function may not be mandatory, it still represents a pathway that could be exploited under certain conditions. 
+
+Recognizing the possibility of backrunning activity and subsequently choosing not to utilize the donateToTranche function as a precautionary measure does not invalidate the existence of the issue. Instead, it serves as a practical mitigation strategy and underscores the importance of proactive risk management.
+
+Furthermore, while opting not to use the `donateToTranche` function in certain scenarios may reduce the likelihood of exploitation, it doesn't negate the need for addressing the underlying vulnerability. It's important to view this decision as a proactive measure aimed at minimizing risk rather than dismissing the issue altogether.
+
+**Atharv181**
+
+Talking about the severity the identified vulnerability clearly meets the criteria for a **medium** severity issue. It results in a loss of funds, as highlighted by the **Dilution of Donations**, which directly impacts the intended recipients of those funds. While the exploit may require certain external conditions or specific states to occur, the potential for loss is significant and cannot be dismissed lightly.
+
+The fact that the vulnerability exists and can lead to tangible financial harm underscores its severity. Even though the losses may not be immediate or guaranteed, they exceed a small, finite amount of funds, especially when considering the significance of the loss to affected lenders.
+
+**Thomas-Smets**
+
+Let's not use chatGPT when discussing the findings.
+
+**Atharv181**
+
+Sorry for this. I come from non-English speaking country hence I used it for less grammar mistakes. I hope you understand. 
+I will make sure this will not happen again. Thank you.
+  
+
+**erosjohn**
+
+I would like to add that even if there is no attacker, this will harm other users' profits. As long as a new user deposits assets into jrTranche after `_settleAuction()` is called, when `donateToTranche()` is called later to compensate the jrTranche, the profit of the original user will be diluted.
+Obviously, the operation of a new user depositing assets into tranche will happen at any time, and as long as the protocol is not checked, you have no way to avoid it.
+
+**Czar102**
+
+> The protocol will later "donate" these proceeds back to the impacted Tranches
+
+It seems that the donation was to be to Tranches, not to Tranches' holders at the time of the auction/auction failure. This itself is a logical issue that should be recognized as the core issue here.
+
+I think most doubts regarding the validity of this issue come from the fact that modifying the planned usage of the functionality solves this issue. I don't think this means that an issue is invalid.
+
+If I am mistaken and there is other clear evidence that the donation was to be done to holders at the time the auctioned assets were subtracted from a tranche's balance, I will agree with invalidation. Right now, the sponsor's arguments seem to be that this the comments were suggesting a route for next steps, and these steps could be different. Without mentioning the mint monitoring checks, this seems to be equivalent to an approach that "in a manual action, we would notice this issue", while assuming that the issue will be found anyway doesn't invalidate its existence.
+@nevillehuang @Thomas-Smets do my points make sense?
+
+**nevillehuang**
+
+@Czar102 This issue is definitely possible, however, `donateToTranche()` is not a core functionality of the protocol, as it is solely used for manual liquidations to allow the manual liquidator to possibly serve as a way to compensate junior tranches. I suggest relooking at the sponsor comments [here](https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/121#issuecomment-1972955779) and [here](https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/121#issuecomment-1973443177)
+
+**pa-sh0k**
+
+@nevillehuang why "not a core functionality" is used as an argument for issue's invalidity? It is definitely in scope and is a part of the protocol
+
+**Thomas-Smets**
+
+> @nevillehuang why "not a core functionality" is used as an argument for issue's invalidity? It is definitely in scope and is a part of the protocol
+
+The function is never called from a function within the protocol.
+It is always a someone from outside the protocol that must call the function.
+An attacker is never certain the function will be called, they cannot enforce it in any way possible.
+
+If you read my comments above I am not denying it is an issue, I stated that since there is no guarantee on profit and it can even be avoided there is ever profit for an attacker, I consider it a low issue.
+
+**Czar102**
+
+Is there an expectation of a donation of nonzero proceeds in the unhappy flow? Or are positive proceeds not expected? @Thomas-Smets 
+
+**Atharv181**
+
+> I would like to add that even if there is no attacker, this will harm other users' profits. As long as a new user deposits assets into  jrTranche after _settleAuction() is called, when donateToTranche() is called later to compensate the jrTranche, the profit of the original user will be diluted.
+
+Also dilutes the donations for users.
+
+
+**Atharv181**
+
+
+![image](https://github.com/sherlock-audit/2023-12-arcadia-judging/assets/73999654/e73d82bb-b0fe-4a05-8b55-3f4a45a12cc6)
+
+It is clearly mentioned [here](https://github.com/sherlock-audit/2023-12-arcadia/blob/de7289bebb3729505a2462aa044b3960d8926d78/lending-v2/src/LendingPool.sol#L346) that it is used to compensate the tranche after an auction didn't get sold (unhappy flow)
+
+
+
+**Thomas-Smets**
+
+My point of view: it is a low issue
+I feel discussing it more is not that useful since we are just in a yes-no discussion.
+
+We are talking about an emergency situation where the protocol already didn't function as expected and that has to be resolved 100% manually. And in no way is `donateToTranche()` enforced to be called, if it can be called it makes things easier, if not it can still be resolved 100% without losses to users.
+
+1. It should never occur in the first place (low probability)
+2. If an attacker wants to make significant profits with this, they have to put a lot of funds in the Tranche (order of total liquidity in the Tranche). This also can't be done atomic or via flash loans, so it have to actual attacker funds locked in Tranche. Even if it happens the dilution is a share of a single badDebt amount shared over all LPs.
+3. The attacker can not trigger or be sure `donateToTranche()` is ever triggered. The recipient of the Account is a permissioned role, and not forced to use `donateToTranche()` in this specific flow.
+
+> @Czar102 Is there an expectation of a donation of nonzero proceeds in the unhappy flow? Or are positive proceeds not expected?
+
+Not sure I fully understand the question, `auctionBoughtIn` is only called if an auction failed, that can be due to market conditions (-> no profit) or due to technical problems (reverting getValue or sometghing like that), in the latter case it can be that the proceeds of the manually liquidated Account were bigger than the initial debt.
+
+@Atharv181, It is clearly mentioned [here](https://github.com/sherlock-audit/2023-12-arcadia/blob/de7289bebb3729505a2462aa044b3960d8926d78/lending-v2/src/LendingPool.sol#L346) that it is used to compensate the tranche after an auction didn't get sold (unhappy flow)
+
+We say very clear: It is **_A way_**. We do not say it is **_the way_**.
+It is not enforced by the logic of the protocol!
+
+**Czar102**
+
+The situation of unhappy flow hasn't been taken out of scope (despite it being perceived as extremely improbable), and it has been explicitly mentioned that the `donateToTranche()` is to be used in scenarios where funds from the liquidation are to be returned. An action not being enforced by the smart contract logic doesn't make the intended use of a function out of scope.
+
+Since this approach is exploitable, I'm planning to consider it a valid Medium severity issue.
+
+**Czar102**
+
+Result:
+Medium
+Has duplicates
+
+
+**sherlock-admin3**
+
+Escalations have been resolved successfully!
+
+Escalation status:
+- [zzykxx](https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/121/#issuecomment-1970897812): accepted
 
 # Issue M-6: `LendingPool#flashAction` is broken when trying to refinance position across `LendingPools` due to improper access control 
 
