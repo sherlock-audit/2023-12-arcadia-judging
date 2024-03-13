@@ -425,6 +425,14 @@ Fixes:
 
 The protocol team fixed this issue in PR/commit https://github.com/arcadia-finance/accounts-v2/pull/171.
 
+**IAm0x52**
+
+Fix looks good. Accounts can no longer own themselves as all transfers of ownership to self are now blocked.
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
 # Issue H-2: Reentrancy in flashAction() allows draining liquidity pools 
 
 Source: https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/153 
@@ -1029,6 +1037,14 @@ Fix consists out of two PR's:
 - accounts: https://github.com/arcadia-finance/accounts-v2/pull/173
 - lending: https://github.com/arcadia-finance/lending-v2/pull/133
 
+**IAm0x52**
+
+Fix looks good. By triggering the transfer inside the callback, the account is now locked nonreentrant which prevents liquidation calls.
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
 # Issue H-3: Caching Uniswap position liquidity allows borrowing using undercollateralized Uni positions 
 
 Source: https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/154 
@@ -1547,6 +1563,14 @@ There are several ways to mitigate this issue. One possible option is to perform
 
 The protocol team fixed this issue in PR/commit https://github.com/arcadia-finance/accounts-v2/pull/174.
 
+**IAm0x52**
+
+Fix looks good. AccountV1.sol will now transfer all assets prior to valuing them.
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
 # Issue M-1: Stargate `STG` rewards are accounted incorrectly by `StakedStargateAM.sol` 
 
 Source: https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/38 
@@ -1649,6 +1673,14 @@ Duplicate from https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/
 **sherlock-admin**
 
 The protocol team fixed this issue in PR/commit https://github.com/arcadia-finance/accounts-v2/pull/170.
+
+**IAm0x52**
+
+Fix looks good. Since rewards are claimed on all withdrawals and deposits, reward per token can be calculated directly.
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
 
 # Issue M-2: `CREATE2` address collision against an Account will allow complete draining of lending pools 
 
@@ -1852,6 +1884,14 @@ I do like this idea thanks! We can use 32 bits from the tx.origin and 32 bits fr
 
 The protocol team fixed this issue in PR/commit https://github.com/arcadia-finance/accounts-v2/pull/176.
 
+**IAm0x52**
+
+Fix looks good. By using a 32 bit salt the collision is increased from 2^81 to 2^128 dramatically increasing the cost.
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
 # Issue M-3: L2 sequencer down will push an auction's price down, causing unfair liquidation prices, and potentially guaranteeing bad debt 
 
 Source: https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/60 
@@ -1932,6 +1972,14 @@ Since it was mentioned in the contest details as the following, I believe the ex
 **sherlock-admin**
 
 The protocol team fixed this issue in PR/commit https://github.com/arcadia-finance/lending-v2/pull/136.
+
+**IAm0x52**
+
+Fix looks good. Bids made during sequencer downtime revert and all auctions automatically refresh auction starting time.
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
 
 # Issue M-4: Utilisation Can Be Manipulated Far Above 100% 
 
@@ -2186,6 +2234,14 @@ Banditx0x's comment was last edited on 5:26AM UTC, while the escalation period e
 
 The escalation should have been deleted, there was an issue on Sherlock's part that's now resolved.
 
+**IAm0x52**
+
+Fix looks good. Utilization is now capped at 100% 
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
 # Issue M-5: Dilution of Donations in Tranche 
 
 Source: https://github.com/sherlock-audit/2023-12-arcadia-judging/issues/121 
@@ -2432,16 +2488,6 @@ If other way of refunding is chosen for some other reasons, the attacker can sim
 
 **Atharv181**
 
-I'd like to further emphasize the significance of our concerns. While it's true that the `donateToTranche` function is not the only method for handling manual liquidation settlements, it remains a potential avenue for exploitation. If the protocol was aware of this vulnerability beforehand, it raises questions as to why it wasn't explicitly mentioned in the known issues.
-
-It's crucial to acknowledge that while the function may not be mandatory, it still represents a pathway that could be exploited under certain conditions. 
-
-Recognizing the possibility of backrunning activity and subsequently choosing not to utilize the donateToTranche function as a precautionary measure does not invalidate the existence of the issue. Instead, it serves as a practical mitigation strategy and underscores the importance of proactive risk management.
-
-Furthermore, while opting not to use the `donateToTranche` function in certain scenarios may reduce the likelihood of exploitation, it doesn't negate the need for addressing the underlying vulnerability. It's important to view this decision as a proactive measure aimed at minimizing risk rather than dismissing the issue altogether.
-
-**Atharv181**
-
 Talking about the severity the identified vulnerability clearly meets the criteria for a **medium** severity issue. It results in a loss of funds, as highlighted by the **Dilution of Donations**, which directly impacts the intended recipients of those funds. While the exploit may require certain external conditions or specific states to occur, the potential for loss is significant and cannot be dismissed lightly.
 
 The fact that the vulnerability exists and can lead to tangible financial harm underscores its severity. Even though the losses may not be immediate or guaranteed, they exceed a small, finite amount of funds, especially when considering the significance of the loss to affected lenders.
@@ -2449,12 +2495,6 @@ The fact that the vulnerability exists and can lead to tangible financial harm u
 **Thomas-Smets**
 
 Let's not use chatGPT when discussing the findings.
-
-**Atharv181**
-
-Sorry for this. I come from non-English speaking country hence I used it for less grammar mistakes. I hope you understand. 
-I will make sure this will not happen again. Thank you.
-  
 
 **erosjohn**
 
@@ -2619,4 +2659,12 @@ The protocol team fixed this issue in PR/commit https://github.com/arcadia-finan
 Fix consists out of two PR's:
 - accounts: https://github.com/arcadia-finance/accounts-v2/pull/173
 - lending: https://github.com/arcadia-finance/lending-v2/pull/133
+
+**IAm0x52**
+
+Fix looks good. Removes the updateActionTimestampByCreditor call and instead uses a callback to enforce nonreentrant and prevent ERC777s from reentering 
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
 
